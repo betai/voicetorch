@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 from torchvision import datasets, transforms
+import scipy.misc
+import numpy as np
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -56,6 +58,9 @@ class Net(nn.Module):
         self.conv2_drop = nn.Dropout2d()
         self.fc1 = nn.Linear(320, 50)
         self.fc2 = nn.Linear(50, 10)
+        self.rfc1 = nn.Linear(50, 512)
+        self.rfc2 = nn.Linear(512, 1024)
+        self.rfc3 = nn.Linear(1024, 28*28)
 
     def forward(self, x):
         x = F.relu(F.max_pool2d(self.conv1(x), 2))
@@ -63,8 +68,13 @@ class Net(nn.Module):
         x = x.view(-1, 320)
         x = F.relu(self.fc1(x))
         x = F.dropout(x, training=self.training)
-        x = self.fc2(x)
-        return F.log_softmax(x)
+        category = F.log_softmax(self.fc2(x))
+        x = F.relu(self.rfc1(x))
+        x = F.dropout(x, training=self.training)
+        x = F.relu(self.rfc2(x))
+        x = F.dropout(x, training=self.training)
+        x = F.sigmoid(self.rfc3(x))
+        return [category, x]
 
 model = Net()
 if args.cuda:
@@ -72,21 +82,33 @@ if args.cuda:
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
+def save_image(filename, v):
+    arr = np.asarray(v.data.numpy())
+    scipy.misc.imsave(filename, arr)
+
+saved_image_count = 0
+
 def train(epoch):
+    global saved_image_count
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         if args.cuda:
-            data, target = data.cuda(), target.cuda()
-        data, target = Variable(data), Variable(target)
+            data = data.cuda()
+        data, category_target, image_target = Variable(data), Variable(target), Variable(data).view(-1, 28*28)
         optimizer.zero_grad()
-        output = model(data)
-        loss = F.nll_loss(output, target)
+        [category, image] = model(data)
+        category_loss = F.nll_loss(category, category_target)
+        image_loss = torch.sum((image - image_target) ** 2) * 0.0001
+        loss = category_loss + image_loss
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tCat loss: {:.6f}\tImg loss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.data[0]))
+                100. * batch_idx / len(train_loader), category_loss.data[0], image_loss.data[0]))
+            save_image("/tmp/mnist/%d-out.png" % saved_image_count, image[0].view(28, 28))
+            save_image("/tmp/mnist/%d-in.png" % saved_image_count, data[0,0])
+            saved_image_count += 1
 
 def test():
     model.eval()
@@ -109,4 +131,4 @@ def test():
 
 for epoch in range(1, args.epochs + 1):
     train(epoch)
-    test()
+    #test()
