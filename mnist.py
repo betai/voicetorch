@@ -8,6 +8,8 @@ from torch.autograd import Variable
 from torchvision import datasets, transforms
 import scipy.misc
 import numpy as np
+import soundfile as sf
+import os
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -34,47 +36,68 @@ torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('../data', train=True, download=True,
-                   transform=transforms.Compose([
-                       transforms.ToTensor(),
-                       transforms.Normalize((0.1307,), (0.3081,))
-                   ])),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
-test_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('../data', train=False, transform=transforms.Compose([
-                       transforms.ToTensor(),
-                       transforms.Normalize((0.1307,), (0.3081,))
-                   ])),
-    batch_size=args.test_batch_size, shuffle=True, **kwargs)
+import os
 
+all_audio_files = []
+def audio_files(dir):
+    global all_audio_files
+    if len(all_audio_files) > 0:
+        return all_audio_files
+    all_audio_files = flatten(audio_files_helper(dir))
+    
+    return all_audio_files
+
+def flatten(arr):
+    result = []
+    for elem in arr:
+        if isinstance(elem, str) and elem.endswith('.flac'):
+            result.append(elem)
+        elif isinstance(elem, str):
+            continue
+        else:
+            result.extend(flatten(elem))
+    return result
+
+BLOCK_SIZE=512
+WINDOW_SIZE=BLOCK_SIZE*2
+
+def audio_files_helper(dir):
+    return [audio_files_helper(os.path.join(dir, elem)) if os.path.isdir(os.path.join(dir, elem)) else os.path.join(dir, elem) for elem in os.listdir(dir)]
+
+def random_samples():
+    files = audio_files('/Users/betai/Work/voicetorch/LibriSpeech')
+    for audio_file in files:
+        current_file_blocks = sf.blocks(audio_file, blocksize=BLOCK_SIZE, overlap=0)
+        for block in current_file_blocks:
+            if len(block) == BLOCK_SIZE:
+                fft_data = np.fft.fft(block)
+                yield np.concatenate([np.real(fft_data), np.imag(fft_data)])
+        
+def minibatches():
+    batch = []
+    for block in random_samples():
+        batch.append(block)
+        if len(batch) == args.batch_size:
+            yield np.array(batch, dtype=np.float32)
+            batch = []
 
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
-        self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
-        self.conv2_drop = nn.Dropout2d()
-        self.fc1 = nn.Linear(320, 50)
-        self.fc2 = nn.Linear(50, 10)
-        self.rfc1 = nn.Linear(50, 512)
-        self.rfc2 = nn.Linear(512, 1024)
-        self.rfc3 = nn.Linear(1024, 28*28)
+        self.fc1 = nn.Linear(WINDOW_SIZE, 256)
+        self.fc2 = nn.Linear(256, 64)
+        self.rfc1 = nn.Linear(64, 256)
+        self.rfc2 = nn.Linear(256, WINDOW_SIZE)
 
     def forward(self, x):
-        x = F.relu(F.max_pool2d(self.conv1(x), 2))
-        x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
-        x = x.view(-1, 320)
         x = F.relu(self.fc1(x))
         x = F.dropout(x, training=self.training)
-        category = F.log_softmax(self.fc2(x))
+        x = F.relu(self.fc2(x))
+        # x == Embedding
         x = F.relu(self.rfc1(x))
         x = F.dropout(x, training=self.training)
         x = F.relu(self.rfc2(x))
-        x = F.dropout(x, training=self.training)
-        x = F.sigmoid(self.rfc3(x))
-        return [category, x]
+        return x
 
 model = Net()
 if args.cuda:
@@ -91,24 +114,19 @@ saved_image_count = 0
 def train(epoch):
     global saved_image_count
     model.train()
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, data in enumerate(minibatches()):
         if args.cuda:
             data = data.cuda()
-        data, category_target, image_target = Variable(data), Variable(target), Variable(data).view(-1, 28*28)
+        data = Variable(torch.from_numpy(data))
         optimizer.zero_grad()
-        [category, image] = model(data)
-        category_loss = F.nll_loss(category, category_target)
-        image_loss = torch.sum((image - image_target) ** 2) * 0.0001
-        loss = category_loss + image_loss
+        output = model(data)
+        loss = torch.sum((output - data) ** 2)
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tCat loss: {:.6f}\tImg loss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), category_loss.data[0], image_loss.data[0]))
-            save_image("/tmp/mnist/%d-out.png" % saved_image_count, image[0].view(28, 28))
-            save_image("/tmp/mnist/%d-in.png" % saved_image_count, data[0,0])
-            saved_image_count += 1
+            print('Train Epoch: {} [{}]\tLoss: {:.6f}'.format(
+                epoch, batch_idx * len(data),
+                loss.data[0]))
 
 def test():
     model.eval()
@@ -132,3 +150,4 @@ def test():
 for epoch in range(1, args.epochs + 1):
     train(epoch)
     #test()
+ 
