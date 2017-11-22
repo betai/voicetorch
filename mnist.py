@@ -44,7 +44,6 @@ def audio_files(dir):
     if len(all_audio_files) > 0:
         return all_audio_files
     all_audio_files = flatten(audio_files_helper(dir))
-    
     return all_audio_files
 
 def flatten(arr):
@@ -58,7 +57,7 @@ def flatten(arr):
             result.extend(flatten(elem))
     return result
 
-BLOCK_SIZE=512
+BLOCK_SIZE=256
 WINDOW_SIZE=BLOCK_SIZE*2
 
 def audio_files_helper(dir):
@@ -67,12 +66,15 @@ def audio_files_helper(dir):
 def random_samples():
     files = audio_files('/Users/betai/Work/voicetorch/LibriSpeech')
     for audio_file in files:
-        current_file_blocks = sf.blocks(audio_file, blocksize=BLOCK_SIZE, overlap=0)
-        for block in current_file_blocks:
-            if len(block) == BLOCK_SIZE:
-                fft_data = np.fft.fft(block)
-                yield np.concatenate([np.real(fft_data), np.imag(fft_data)])
-        
+        try:
+            current_file_blocks = sf.blocks(audio_file, blocksize=BLOCK_SIZE, overlap=0)
+            for block in current_file_blocks:
+                if len(block) == BLOCK_SIZE:
+                    fft_data = np.fft.fft(block)
+                    yield np.concatenate([np.real(fft_data), np.imag(fft_data)])
+        except:
+            continue
+
 def minibatches():
     batch = []
     for block in random_samples():
@@ -96,7 +98,7 @@ class Net(nn.Module):
         # x == Embedding
         x = F.relu(self.rfc1(x))
         x = F.dropout(x, training=self.training)
-        x = F.relu(self.rfc2(x))
+        x = self.rfc2(x)
         return x
 
 model = Net()
@@ -150,4 +152,3 @@ def test():
 for epoch in range(1, args.epochs + 1):
     train(epoch)
     #test()
- 
